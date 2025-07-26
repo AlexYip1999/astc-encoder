@@ -45,3 +45,5 @@ Source/astcenccli_version.h
 
 # Do not ignore workflows
 !.github/workflows/
+
+!Script/*

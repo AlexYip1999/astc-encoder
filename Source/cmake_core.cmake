@@ -108,6 +108,18 @@ if(${ASTCENC_CLI})
             ${ASTCENC_TARGET}-veneer1
             ${ASTCENC_TARGET}-veneer2
             ${ASTCENC_TARGET}-static)
+
+    add_executable(${ASTCENC_TARGET}-test
+        test_block_codec.cpp
+        astc_block_codec.cpp
+        astc_block_codec.h
+    )
+    
+    target_link_libraries(${ASTCENC_TARGET}-test
+        PRIVATE
+            ${ASTCENC_TARGET}-veneer1
+            ${ASTCENC_TARGET}-veneer2
+            ${ASTCENC_TARGET}-static)
 endif()
 
 macro(astcenc_set_properties ASTCENC_TARGET_NAME ASTCENC_VENEER_TYPE)
@@ -498,6 +510,7 @@ if(${ASTCENC_CLI})
     astcenc_set_properties(${ASTCENC_TARGET}-veneer1 1)
     astcenc_set_properties(${ASTCENC_TARGET}-veneer2 2)
     astcenc_set_properties(${ASTCENC_TARGET} 0)
+    astcenc_set_properties(${ASTCENC_TARGET}-test 0)
 
     target_compile_options(${ASTCENC_TARGET}-veneer1
         PRIVATE
