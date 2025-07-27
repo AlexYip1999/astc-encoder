@@ -120,6 +120,11 @@ if(${ASTCENC_CLI})
             ${ASTCENC_TARGET}-veneer1
             ${ASTCENC_TARGET}-veneer2
             ${ASTCENC_TARGET}-static)
+
+    target_compile_definitions(${ASTCENC_TARGET}-test 
+        PRIVATE 
+            DEFAULT_CONFIG_FILE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/example_config.ini")
+
 endif()
 
 macro(astcenc_set_properties ASTCENC_TARGET_NAME ASTCENC_VENEER_TYPE)

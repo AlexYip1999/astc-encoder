@@ -1093,7 +1093,7 @@ struct symbolic_compressed_block
 	uint8_t color_formats[BLOCK_MAX_PARTITIONS];
 
 	/** @brief The endpoint color quant mode; valid for @c NONCONST blocks. */
-	quant_method quant_mode;
+    quant_method quant_mode;
 
 	/** @brief The error of the current encoding; valid for @c NONCONST blocks. */
 	float errorval;
