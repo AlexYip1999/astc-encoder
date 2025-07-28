@@ -1,4 +1,4 @@
-#include "astc_block_codec.h"
+﻿#include "astc_block_codec.h"
 #include <iostream>
 #include <string>
 #include <cstring>
@@ -21,7 +21,7 @@ Example usage:
 4. Test with custom endpoints:
    ./test_block_codec -b 4x4 -e 255,255,255,255,128,128,128,128
 
-5. Test with custom weights (number depends on block size and mode):
+5. Test with custom weights (number depends on block size and block_mode):
    ./test_block_codec -b 6x6 -w 128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128
 
 6. List supported block sizes:
@@ -71,7 +71,7 @@ Default Configuration:
 
 Supported block sizes: 4x4, 5x4, 5x5, 6x5, 6x6, 8x5, 8x6, 8x8, 10x5, 10x6, 10x8, 10x10, 12x10, 12x12
 
-Note: The number of weights required varies by block size and block mode.
+Note: The number of weights required varies by block size and block block_mode.
       The program will automatically determine the required weight count and
       fill missing weights with default values (128).
 
@@ -103,17 +103,26 @@ int main(int argc, char* argv[])
         return 1;
     }
 
-    // Handle special commands first
-    if (handle_special_commands(params, argv[0]))
+    // 如果有压缩块，直接解压
+    if (params.compressed_block.size() != 16)
     {
-        return 0;
+        // Handle special commands first
+        if (!handle_special_commands(params, argv[0]))
+        {
+            return 1;
+        }
+
+        // 否则执行压缩并自动解压
+        if (!execute_compression_test(params))
+        {
+            return 0;
+        }
     }
 
-    // Execute main compression test
-    if (!execute_compression_test(params))
+    // 自动解压压缩结果
+    if (params.compressed_block.size() == 16)
     {
-        return 1;
+        decompress_astc_block_from_vec(params.compressed_block);
     }
-
     return 0;
 }
