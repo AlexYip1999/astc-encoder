@@ -27,8 +27,8 @@ public:
         int block_height = 4;
         int block_mode = 0; // 0=auto, >0=force specified block block_mode
         int partition = 0;
-        uint8_t endpoints[8] = {255, 255, 255, 255, 0, 0, 0, 0};
-        std::vector<uint8_t> weights;
+        std::vector<uint8_t> endpoints = {255, 255, 255, 255, 0, 0, 0, 0};
+        std::vector<float> weights;
         bool show_help = false;
         bool list_block_sizes = false;
         bool test_public_functions = false;
@@ -88,8 +88,8 @@ public:
 private:
     // Helper functions for parsing specific parameter types
     static bool parse_block_size(const std::string& str, int& width, int& height);
-    static bool parse_endpoints(const std::string& str, uint8_t endpoints[8]);
-    static bool parse_weights(const std::string& str, std::vector<uint8_t>& weights);
+    static bool parse_endpoints(const std::string& str, std::vector<uint8_t>& endpoints);
+    static bool parse_weights(const std::string& str, std::vector<float>& weights);
     static bool parse_int(const std::string& str, int& value);
     static bool parse_bool(const std::string& str, bool& value);
 };
@@ -133,11 +133,11 @@ void print_astc_block_info(const astcenc_block_info& info);
 // Note: The actual number of weights needed depends on the block size and block block_mode.
 //       Use get_weight_count_for_block_mode() to determine the required weight count.
 bool manual_construct_astc_block(uint8_t* compressed, 
-                                 int block_width, int block_height,
-                                 int block_mode, int partition_index, int partition_count,
-                                 const uint8_t* endpoints, int endpoint_count, 
-                                 const uint8_t* weights, int weight_count,
-                                 bool has_alpha, uint8_t* result);
+                                int block_width, int block_height,
+                                int block_mode, int partition_index, int partition_count,
+                                const uint8_t* endpoints, int endpoint_count, 
+                                const float* weights, int weight_count,
+                                bool has_alpha, uint8_t* result);
 
 // Get the required weight count for a specific block size and block_mode
 // block_width, block_height: block dimensions
@@ -201,7 +201,7 @@ void list_quantization_levels();
 bool handle_special_commands(ASTCParameterParser::Parameters& params, const char* program_name);
 
 // Execute the main ASTC compression test
-bool execute_compression_test(const ASTCParameterParser::Parameters& params);
+bool execute_compression_test(ASTCParameterParser::Parameters& params);
 
 // Validate parameters for compression test
 bool validate_compression_parameters(const ASTCParameterParser::Parameters& params);

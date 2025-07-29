@@ -476,7 +476,7 @@ bool manual_construct_astc_block(
     int block_width, int block_height,
     int block_mode, int partition_index, int partition_count,
     const uint8_t* endpoints, int endpoint_count,
-    const uint8_t* weights, int weight_count,
+    const float* weights, int weight_count,
     bool has_alpha,
     int plane2_component,
     uint8_t* result)
@@ -502,9 +502,9 @@ bool manual_construct_astc_block(
 
     const auto& bm = bsd->block_modes[packed_index];
     const auto& di = bsd->get_decimation_info(bm.decimation_mode);
-    int actual_weight_count = di.weight_count;
-    bool is_dual_plane = bm.is_dual_plane;
-    int required_weight_count = is_dual_plane ? actual_weight_count * 2 : actual_weight_count;
+    const int actual_weight_count = di.weight_count;
+    const bool is_dual_plane = bm.is_dual_plane;
+    const int required_weight_count = is_dual_plane ? actual_weight_count * 2 : actual_weight_count;
 
     if (weight_count < required_weight_count)
     {
@@ -525,41 +525,30 @@ bool manual_construct_astc_block(
     scb.color_formats[1] = 0;
     scb.color_formats[2] = 0;
     scb.color_formats[3] = 0;
-    scb.color_values[0][0] = endpoints[0];
-    scb.color_values[0][1] = endpoints[1];
-    scb.color_values[0][2] = endpoints[2];
-    scb.color_values[0][3] = endpoints[3];
-    scb.color_values[1][0] = endpoints[4];
-    scb.color_values[1][1] = endpoints[5];
-    scb.color_values[1][2] = endpoints[6];
-    scb.color_values[1][3] = endpoints[7];
+    scb.color_values[partition_index][0] = endpoints[0];
+    scb.color_values[partition_index][2] = endpoints[1];
+    scb.color_values[partition_index][4] = endpoints[2];
+    scb.color_values[partition_index][6] = endpoints[3];
+    scb.color_values[partition_index][1] = endpoints[4];
+    scb.color_values[partition_index][3] = endpoints[5];
+    scb.color_values[partition_index][5] = endpoints[6];
+    scb.color_values[partition_index][7] = endpoints[7];
 
-    if (is_dual_plane)
+    // Get weight quantization levels for proper scaling
+    quant_method weight_quant_method = bm.get_weight_quant_mode();
+    int weight_range = get_quant_level(weight_quant_method) - 1;
+    
+    // Set weights for both planes (plane 1 and plane 2 if dual plane)
+    for (int i = 0; i < actual_weight_count; i++)
     {
-        for (int i = 0; i < actual_weight_count; i++)
+        // Set plane 1 weights: convert from 0-1 range to 0-64 range
+        // weights[i] is in 0-1 range, multiply by 64 to get 0-64 range
+        scb.weights[i] = i < weight_count ? weights[i] * 64.0f : 64.0f; // Default to middle value
+
+        if (is_dual_plane)
         {
-            if (i < weight_count)
-                scb.weights[i] = weights[i];
-            else
-                scb.weights[i] = 128;
-            if (i + actual_weight_count < weight_count)
-                scb.weights[i + WEIGHTS_PLANE2_OFFSET] = weights[i + actual_weight_count];
-            else
-                scb.weights[i + WEIGHTS_PLANE2_OFFSET] = 128;
-        }
-    }
-    else
-    {
-        for (int i = 0; i < actual_weight_count; i++)
-        {
-            if (i < weight_count)
-            {
-                scb.weights[i] = weights[i];
-            }
-            else
-            {
-                scb.weights[i] = 128;
-            }
+            scb.weights[i + WEIGHTS_PLANE2_OFFSET] = i + actual_weight_count < weight_count ? 
+                weights[i + actual_weight_count] * 64.0f : 64.0f; // Default to middle value
         }
     }
 
@@ -909,7 +898,7 @@ void ASTCParameterParser::print_parameters(const Parameters& params)
         for (size_t i = 0; i < params.weights.size(); i++)
         {
             if (i > 0) std::cout << ",";
-            std::cout << (int)params.weights[i];
+            std::cout << params.weights[i];
         }
     }
     std::cout << std::endl;
@@ -963,7 +952,7 @@ bool ASTCParameterParser::parse_block_size(const std::string& str, int& width, i
     }
 }
 
-bool ASTCParameterParser::parse_endpoints(const std::string& str, uint8_t endpoints[8])
+bool ASTCParameterParser::parse_endpoints(const std::string& str, std::vector<uint8_t>& endpoints)
 {
     std::vector<int> values;
     
@@ -990,15 +979,16 @@ bool ASTCParameterParser::parse_endpoints(const std::string& str, uint8_t endpoi
     if (values.size() != 8)
         return false;
     
+    endpoints.clear();
     for (int i = 0; i < 8; i++)
     {
-        endpoints[i] = static_cast<uint8_t>(values[i]);
+        endpoints.push_back(static_cast<uint8_t>(values[i]));
     }
     
     return true;
 }
 
-bool ASTCParameterParser::parse_weights(const std::string& str, std::vector<uint8_t>& weights)
+bool ASTCParameterParser::parse_weights(const std::string& str, std::vector<float>& weights)
 {
     std::string s = str;
     weights.clear();
@@ -1014,8 +1004,8 @@ bool ASTCParameterParser::parse_weights(const std::string& str, std::vector<uint
         
         try
         {
-            int value = std::stoi(s.substr(pos, comma_pos - pos));
-            weights.push_back(static_cast<uint8_t>(value));
+            float value = std::stof(s.substr(pos, comma_pos - pos));
+            weights.push_back(value);
         }
         catch (...)
         {
@@ -1218,7 +1208,7 @@ bool handle_special_commands(ASTCParameterParser::Parameters& params, const char
     return false; // No special command handled
 }
 
-bool execute_compression_test(const ASTCParameterParser::Parameters& params)
+bool execute_compression_test(ASTCParameterParser::Parameters& params)
 {
     std::cout << "\n=========== execute_compression_test ===========\n\n";
 
@@ -1228,39 +1218,42 @@ bool execute_compression_test(const ASTCParameterParser::Parameters& params)
         return false;
     }
 
-    // Create working copy of parameters
-    ASTCParameterParser::Parameters working_params = params;
-
     // If block_mode is 0, calculate the block block_mode from parameters
-    if (working_params.block_mode == 0)
+    if (params.block_mode == 0)
     {
-        if (!calculate_and_handle_block_mode(working_params, true))
+        if (!calculate_and_handle_block_mode(params, true))
         {
             return false;
         }
     }
 
     // Get required weight count
-    const int required_weight_count = get_weight_count_for_block_mode(working_params.block_width, working_params.block_height, working_params.block_mode);
-    if (required_weight_count != working_params.weights.size())
+    const int required_weight_count = get_weight_count_for_block_mode(params.block_width, params.block_height, params.block_mode);
+    if (required_weight_count != params.weights.size())
     {
-        std::cerr << "Error: Invalid block block_mode " << working_params.block_mode << " for " 
-                  << working_params.block_width << "x" << working_params.block_height << " blocks" << std::endl;
+        std::cerr << "Error: Invalid block block_mode " << params.block_mode << " for " 
+                  << params.block_width << "x" << params.block_height << " blocks" << std::endl;
         return false;
     }
 
     // Initialize weights if needed
-    int expected_weight_count = working_params.block_width * working_params.block_height * (working_params.is_dual_plane_mode ? 2 : 1);
-    if (working_params.weights.empty() || working_params.weights.size() < expected_weight_count)
+    const int expected_weight_count = params.block_width * params.block_height * (params.is_dual_plane_mode ? 2 : 1);
+    if (params.weights.empty() || params.weights.size() < expected_weight_count)
     {
-        working_params.weights.resize(expected_weight_count, 128); // Fill with default value 128
+        params.weights.resize(expected_weight_count, 0.5f); // Fill with default value 0.5
+    }
+
+    // Initialize endpoints if needed
+    if (params.endpoints.empty())
+    {
+        params.endpoints = {255, 255, 255, 255, 0, 0, 0, 0}; // Default endpoints
     }
 
     // Print parameters
-    print_compression_parameters(working_params);
+    print_compression_parameters(params);
 
     // Execute compression
-    return execute_compression(working_params);
+    return execute_compression(params);
 }
 
 bool validate_compression_parameters(const ASTCParameterParser::Parameters& params)
@@ -1290,19 +1283,32 @@ void print_compression_parameters(const ASTCParameterParser::Parameters& params)
         {
             std::cout << " ";
         }
-        std::cout << std::setw(3) << (int)params.endpoints[i];
+        std::cout << std::setw(3) << (int)(i < params.endpoints.size() ? params.endpoints[i] : 0);
     }
     std::cout << std::endl;
+
     // 新增：输出归一化到0.0~1.0的浮点数
-    std::cout << "Endpoints (normalized): ";
+    std::cout << "Endpoints (normalized):" << std::endl;
     std::cout << std::fixed << std::setprecision(3);
-    for (int i = 0; i < 8; i++)
+    std::cout << "  Endpoint 0: ";
+    for (int i = 0; i < 4; i++)
     {
         if (i > 0)
         {
             std::cout << " ";
         }
-        std::cout << std::setw(6) << (float(params.endpoints[i]) / 255.0f);
+        std::cout << std::setw(6) << (float(i < params.endpoints.size() ? params.endpoints[i] : 0) / 255.0f);
+    }
+    std::cout << std::endl;
+
+    std::cout << "  Endpoint 1: ";
+    for (int i = 4; i < 8; i++)
+    {
+        if (i > 4)
+        {
+            std::cout << " ";
+        }
+        std::cout << std::setw(6) << (float(i < params.endpoints.size() ? params.endpoints[i] : 0) / 255.0f);
     }
     std::cout.unsetf(std::ios::fixed);
     std::cout << "\n\n";
@@ -1383,9 +1389,9 @@ void print_compression_parameters(const ASTCParameterParser::Parameters& params)
                 {
                     int index = y * weight_x + x;
                     if (index < plane_size)
-                        std::cout << std::setw(3) << (int)params.weights[index];
+                        std::cout << std::setw(6) << std::fixed << std::setprecision(2) << params.weights[index];
                     else
-                        std::cout << "  -";
+                        std::cout << "    -";
                     if (x < weight_x - 1) std::cout << " ";
                 }
                 std::cout << std::endl;
@@ -1399,9 +1405,9 @@ void print_compression_parameters(const ASTCParameterParser::Parameters& params)
                 {
                     int index = y * weight_x + x;
                     if (index < plane_size)
-                        std::cout << std::setw(3) << (int)params.weights[plane_size + index];
+                        std::cout << std::setw(6) << std::fixed << std::setprecision(2) << params.weights[plane_size + index];
                     else
-                        std::cout << "  -";
+                        std::cout << "    -";
                     if (x < weight_x - 1) std::cout << " ";
                 }
                 std::cout << std::endl;
@@ -1413,7 +1419,7 @@ void print_compression_parameters(const ASTCParameterParser::Parameters& params)
                 for (size_t i = plane_size * 2; i < total_weights; i++)
                 {
                     if (i > plane_size * 2) std::cout << " ";
-                    std::cout << std::setw(3) << (int)params.weights[i];
+                    std::cout << std::setw(6) << std::fixed << std::setprecision(2) << params.weights[i];
                 }
                 std::cout << std::endl;
             }
@@ -1428,9 +1434,9 @@ void print_compression_parameters(const ASTCParameterParser::Parameters& params)
                 {
                     int index = y * weight_x + x;
                     if (index < static_cast<int>(params.weights.size()))
-                        std::cout << std::setw(3) << (int)params.weights[index];
+                        std::cout << std::setw(6) << std::fixed << std::setprecision(2) << params.weights[index];
                     else
-                        std::cout << "  -";
+                        std::cout << "    -";
                     if (x < weight_x - 1) std::cout << " ";
                 }
                 std::cout << std::endl;
@@ -1441,7 +1447,7 @@ void print_compression_parameters(const ASTCParameterParser::Parameters& params)
                 for (size_t i = plane_size; i < params.weights.size(); i++)
                 {
                     if (i > plane_size) std::cout << " ";
-                    std::cout << std::setw(3) << (int)params.weights[i];
+                    std::cout << std::setw(6) << std::fixed << std::setprecision(2) << params.weights[i];
                 }
                 std::cout << std::endl;
             }
@@ -1483,7 +1489,7 @@ bool execute_compression(ASTCParameterParser::Parameters& params)
 
     bool ok = manual_construct_astc_block(manual_compressed, params.block_width, params.block_height, 
                                          params.block_mode, 0, params.partition,
-                                         params.endpoints, endpoint_count, 
+                                         params.endpoints.data(), endpoint_count, 
                                          params.weights.data(), params.weights.size(),
                                          params.has_alpha, plane2_component,
                                          nullptr); // 不再传递 last_compressed_block
@@ -1501,9 +1507,19 @@ bool execute_compression(ASTCParameterParser::Parameters& params)
             std::cout << std::hex << std::setw(2) << std::setfill('0') << (int)manual_compressed[i];
         }
         std::cout << std::dec << std::endl;
-        // 新增：以4个32位无符号整数（十六进制）输出
+        
+        // 新增：以4个32位无符号整数（十进制）输出
         const uint32_t* compressed_u32 = reinterpret_cast<const uint32_t*>(manual_compressed);
-        std::cout << "Compressed data ( hex ): ";
+        std::cout << "Compressed data (decimal): ";
+        for (int i = 0; i < 4; i++) 
+        {
+            if (i > 0) std::cout << " ";
+            std::cout << std::setw(10) << compressed_u32[i];
+        }
+        std::cout << std::endl;
+        
+        // 新增：以4个32位无符号整数（十六进制）输出
+        std::cout << "Compressed data (hex): ";
         for (int i = 0; i < 4; i++) 
         {
             if (i > 0) std::cout << " ";
@@ -1515,12 +1531,12 @@ bool execute_compression(ASTCParameterParser::Parameters& params)
         int original_size = params.block_width * params.block_height * 4; // 4 bytes per pixel (RGBA)
         int compressed_size = 16; // ASTC blocks are always 16 bytes
         float ratio = (float)original_size / compressed_size;
-        std::cout << "Compression ratio: " << std::fixed << std::setprecision(2) << ratio << ":1" << std::endl;
+        std::cout << "Compression ratio: " << std::fixed << std::setprecision(2) << ratio << ":1\n\n";
         return true;
     }
     else
     {
-        std::cout << "Compression failed!" << std::endl;
+        std::cout << "Compression failed! \n\n" << std::endl;
         return false;
     }
 }
@@ -1724,26 +1740,12 @@ void convert_hlsl_preset_to_cpp_params(const HLSLConfigPreset& preset, ASTCParam
         if (preset.is_normalmap)
         {
             // Normal map with alpha (RGBA)
-            params.endpoints[0] = 128; // R1 (normal X)
-            params.endpoints[1] = 128; // G1 (normal Y)
-            params.endpoints[2] = 255; // B1 (normal Z)
-            params.endpoints[3] = 255; // A1 (alpha)
-            params.endpoints[4] = 128; // R2
-            params.endpoints[5] = 128; // G2
-            params.endpoints[6] = 0;   // B2
-            params.endpoints[7] = 0;   // A2
+            params.endpoints = {128, 128, 255, 255, 128, 128, 0, 0}; // R1,G1,B1,A1,R2,G2,B2,A2
         }
         else
         {
             // Standard RGBA
-            params.endpoints[0] = 255; // R1
-            params.endpoints[1] = 255; // G1
-            params.endpoints[2] = 255; // B1
-            params.endpoints[3] = 255; // A1
-            params.endpoints[4] = 0;   // R2
-            params.endpoints[5] = 0;   // G2
-            params.endpoints[6] = 0;   // B2
-            params.endpoints[7] = 0;   // A2
+            params.endpoints = {255, 255, 255, 255, 0, 0, 0, 0}; // R1,G1,B1,A1,R2,G2,B2,A2
         }
     }
     else
@@ -1751,26 +1753,12 @@ void convert_hlsl_preset_to_cpp_params(const HLSLConfigPreset& preset, ASTCParam
         if (preset.is_normalmap)
         {
             // Normal map without alpha (RGB)
-            params.endpoints[0] = 128; // R1 (normal X)
-            params.endpoints[1] = 128; // G1 (normal Y)
-            params.endpoints[2] = 255; // B1 (normal Z)
-            params.endpoints[3] = 255; // A1 (unused)
-            params.endpoints[4] = 128; // R2
-            params.endpoints[5] = 128; // G2
-            params.endpoints[6] = 0;   // B2
-            params.endpoints[7] = 0;   // A2 (unused)
+            params.endpoints = {128, 128, 255, 255, 128, 128, 0, 0}; // R1,G1,B1,A1,R2,G2,B2,A2
         }
         else
         {
             // Standard RGB
-            params.endpoints[0] = 255; // R1
-            params.endpoints[1] = 255; // G1
-            params.endpoints[2] = 255; // B1
-            params.endpoints[3] = 255; // A1 (unused)
-            params.endpoints[4] = 0;   // R2
-            params.endpoints[5] = 0;   // G2
-            params.endpoints[6] = 0;   // B2
-            params.endpoints[7] = 0;   // A2 (unused)
+            params.endpoints = {255, 255, 255, 255, 0, 0, 0, 0}; // R1,G1,B1,A1,R2,G2,B2,A2
         }
     }
     
@@ -1779,7 +1767,7 @@ void convert_hlsl_preset_to_cpp_params(const HLSLConfigPreset& preset, ASTCParam
     if (preset.is_dual_plane)
         weight_count *= 2;
     
-    params.weights.resize(weight_count, 128); // Default weight value
+            params.weights.resize(weight_count, 0.5f); // Default weight value
 }
 
 void print_hlsl_config_presets()
@@ -1929,13 +1917,29 @@ bool parse_config_file(const std::string& file_path, ASTCParameterParser::Parame
 
     while (std::getline(file, line))
     {
-        // Skip empty lines and comments
-        if (line.empty() || line[0] == '#' || line[0] == ';')
-            continue;
-
         // Remove leading/trailing whitespace
         line.erase(0, line.find_first_not_of(" \t"));
         line.erase(line.find_last_not_of(" \t") + 1);
+        
+        // Skip empty lines and comments (lines starting with # or ;)
+        if (line.empty() || line[0] == '#' || line[0] == ';')
+            continue;
+            
+        // Remove inline comments (everything after # or ;)
+        size_t comment_pos = line.find('#');
+        if (comment_pos != std::string::npos)
+            line = line.substr(0, comment_pos);
+            
+        comment_pos = line.find(';');
+        if (comment_pos != std::string::npos)
+            line = line.substr(0, comment_pos);
+            
+        // Remove trailing whitespace after removing comments
+        line.erase(line.find_last_not_of(" \t") + 1);
+        
+        // Skip empty lines after comment removal
+        if (line.empty())
+            continue;
 
         // Check for section headers [section]
         if (line[0] == '[' && line[line.length() - 1] == ']')
@@ -1998,9 +2002,10 @@ bool parse_config_file(const std::string& file_path, ASTCParameterParser::Parame
                         parts.push_back(part);
                     }
                     
+                    params.endpoints.clear();
                     for (int i = 0; i < 8 && i < (int)parts.size(); i++)
                     {
-                        params.endpoints[i] = std::stoi(parts[i]);
+                        params.endpoints.push_back(static_cast<uint8_t>(std::stoi(parts[i])));
                     }
                 }
             }
@@ -2022,14 +2027,14 @@ bool parse_config_file(const std::string& file_path, ASTCParameterParser::Parame
                     params.weights.clear();
                     for (const auto& part : parts)
                     {
-                        int weight_val = std::stoi(part);
-                        // Check if weight is 0 or 1
-                        if (weight_val != 0 && weight_val != 1)
+                        float weight_val = std::stof(part);
+                        // Check if weight is in valid range 0.0-1.0
+                        if (weight_val < 0.0f || weight_val > 1.0f)
                         {
-                            std::cerr << "Error: Weight value must be 0 or 1, got: " << weight_val << std::endl;
+                            std::cerr << "Error: Weight value must be between 0.0 and 1.0, got: " << weight_val << std::endl;
                             return false;
                         }
-                        params.weights.push_back(static_cast<uint8_t>(weight_val));
+                        params.weights.push_back(weight_val);
                     }
                 }
                 else if (key == "count")
@@ -2214,6 +2219,64 @@ int ASTCParameterParser::Parameters::get_plane2_component() const
     return parse_plane2_component_str(plane2_component_str);
 }
 
+// Helper function to get profile name
+std::string get_profile_name(astcenc_profile profile)
+{
+    switch (profile)
+    {
+        case ASTCENC_PRF_LDR_SRGB: return "LDR_SRGB";
+        case ASTCENC_PRF_LDR: return "LDR";
+        case ASTCENC_PRF_HDR_RGB_LDR_A: return "HDR_RGB_LDR_A";
+        case ASTCENC_PRF_HDR: return "HDR";
+        default: return "UNKNOWN(" + std::to_string(static_cast<int>(profile)) + ")";
+    }
+}
+
+// Function to print decompressed color results in block layout
+void print_decompressed_colors(const uint8_t* color_data, int width, int height, int channels)
+{
+    std::cout << "Decompressed colors (RGBA):" << std::endl;
+
+    for (int y = 0; y < height; ++y)
+    {
+        std::cout << "  ";
+        for (int x = 0; x < width; ++x)
+        {
+            int idx = (y * width + x) * channels;
+            std::cout << "(";
+            for (int c = 0; c < channels; ++c)
+            {
+                if (c > 0) std::cout << ", ";
+                std::cout << (int)color_data[idx + c];
+            }
+            std::cout << ") ";
+        }
+        std::cout << std::endl;
+    }
+
+    // Print normalized colors (0.0-1.0 range)
+    std::cout << "\nDecompressed colors (normalized 0.0-1.0):" << std::endl;
+    std::cout << std::fixed << std::setprecision(2);
+
+    for (int y = 0; y < height; ++y)
+    {
+        std::cout << "  ";
+        for (int x = 0; x < width; ++x)
+        {
+            int idx = (y * width + x) * channels;
+            std::cout << "(";
+            for (int c = 0; c < channels; ++c)
+            {
+                if (c > 0) std::cout << ", ";
+                float normalized = color_data[idx + c] / 255.0f;
+                std::cout << normalized;
+            }
+            std::cout << ") ";
+        }
+        std::cout << std::endl;
+    }
+}
+
 // Decompress from 4 uint32_t to 4x4 RGBA pixel block
 void decompress_astc_block_from_u32(const uint32_t compressed_u32[4], uint8_t* out_pixels, int width, int height)
 {
@@ -2236,15 +2299,8 @@ void decompress_astc_block_from_u32(const uint32_t compressed_u32[4], uint8_t* o
         return;
     }
 
-    // 3. Output pixel data
-    std::cout << "Decompressed pixels (RGBA):" << std::endl;
-    for (int i = 0; i < width * height; ++i) 
-    {
-        std::cout << std::setw(3) << (int)out_pixels[i * 4 + 0] << " "
-                  << std::setw(3) << (int)out_pixels[i * 4 + 1] << " "
-                  << std::setw(3) << (int)out_pixels[i * 4 + 2] << " "
-                  << std::setw(3) << (int)out_pixels[i * 4 + 3] << std::endl;
-    }
+    // 3. Output pixel data in block layout
+    print_decompressed_colors(out_pixels, width, height, 4);
 
     // 4. Parse compressed block parameters and output
     std::cout << "\n=== Decompressed Block Parameters ===" << std::endl;
@@ -2350,9 +2406,13 @@ void decompress_astc_block_from_u32(const uint32_t compressed_u32[4], uint8_t* o
             }
             std::cout << " (format: " << std::to_string(static_cast<int>(scb.color_formats[p])) << ")" << std::endl;
         }
-    } else if (scb.block_type == SYM_BTYPE_CONST_U16 || scb.block_type == SYM_BTYPE_CONST_F16) {
+    }
+    else if
+    (scb.block_type == SYM_BTYPE_CONST_U16 || scb.block_type == SYM_BTYPE_CONST_F16) 
+    {
         std::cout << "Constant color: ";
-        for (int i = 0; i < 4; ++i) {
+        for (int i = 0; i < 4; ++i) 
+        {
             if (i > 0) std::cout << ", ";
             std::cout << scb.constant_color[i];
         }
@@ -2390,28 +2450,59 @@ void decompress_astc_block_from_vec(const std::vector<uint8_t>& compressed)
         return;
     }
 
-    // 输出解压的像素数据
-    std::cout << "Decompressed pixels (RGBA):" << std::endl;
-    for (int i = 0; i < block_info.block_x * block_info.block_y; ++i)
-    {
-        std::cout << std::setw(3) << (int)out_pixels[i * 4 + 0] << " "
-                  << std::setw(3) << (int)out_pixels[i * 4 + 1] << " "
-                  << std::setw(3) << (int)out_pixels[i * 4 + 2] << " "
-                  << std::setw(3) << (int)out_pixels[i * 4 + 3] << std::endl;
-    }
-    
     // 输出块信息
     print_astc_block_info(block_info);
+
+    // 输出解压的像素数据（按块布局）
+    print_decompressed_colors(out_pixels, block_info.block_x, block_info.block_y, 4);
+
 }
 
 // Function to print ASTC block information in a readable format
+// Helper function to get dual plane component name
+std::string get_dual_plane_component_name(unsigned int component)
+{
+    switch (component)
+    {
+        case 0: return "Red";
+        case 1: return "Green";
+        case 2: return "Blue";
+        case 3: return "Alpha";
+        default: return "Unknown(" + std::to_string(component) + ")";
+    }
+}
+
+// Helper function to get color endpoint mode name
+std::string get_color_endpoint_mode_name(unsigned int mode)
+{
+    switch (mode)
+    {
+        case 0: return "FMT_LUMINANCE";
+        case 1: return "FMT_LUMINANCE_DELTA";
+        case 2: return "FMT_HDR_LUMINANCE_LARGE_RANGE";
+        case 3: return "FMT_HDR_LUMINANCE_SMALL_RANGE";
+        case 4: return "FMT_LUMINANCE_ALPHA";
+        case 5: return "FMT_LUMINANCE_ALPHA_DELTA";
+        case 6: return "FMT_RGB_SCALE";
+        case 7: return "FMT_HDR_RGB_SCALE";
+        case 8: return "FMT_RGB";
+        case 9: return "FMT_RGB_DELTA";
+        case 10: return "FMT_RGB_SCALE_ALPHA";
+        case 11: return "FMT_HDR_RGB";
+        case 12: return "FMT_RGBA";
+        case 13: return "FMT_RGBA_DELTA";
+        case 14: return "FMT_HDR_RGB_LDR_ALPHA";
+        case 15: return "FMT_HDR_RGBA";
+        default: return "UNKNOWN(" + std::to_string(mode) + ")";
+    }
+}
+
 void print_astc_block_info(const astcenc_block_info& info)
 {
     std::cout << "=== ASTC Block Information ===" << std::endl;
     std::cout << "Block dimensions: " << info.block_x << "x" << info.block_y << "x" << info.block_z << std::endl;
     std::cout << "Texel count: " << info.texel_count << std::endl;
-    std::cout << "Profile: " << (info.profile == ASTCENC_PRF_LDR ? "LDR" : 
-                                info.profile == ASTCENC_PRF_HDR ? "HDR" : "HDR_RGB_LDR_A") << std::endl;
+    std::cout << "Profile: " << get_profile_name(info.profile) << std::endl;
     
     if (info.is_error_block)
     {
@@ -2437,7 +2528,7 @@ void print_astc_block_info(const astcenc_block_info& info)
     
     if (info.is_dual_plane_block)
     {
-        std::cout << "Dual plane component: " << info.dual_plane_component << std::endl;
+        std::cout << "Dual plane component: " << get_dual_plane_component_name(info.dual_plane_component) << std::endl;
     }
     
     std::cout << "Weight grid: " << info.weight_x << "x" << info.weight_y << "x" << info.weight_z << std::endl;
@@ -2447,10 +2538,13 @@ void print_astc_block_info(const astcenc_block_info& info)
     std::cout << "Color endpoint modes: ";
     for (int p = 0; p < info.partition_count; ++p)
     {
-        if (p > 0) std::cout << ", ";
-        std::cout << info.color_endpoint_modes[p];
+        if (p > 0)
+        {
+            std::cout << ", ";
+        }
+        std::cout << get_color_endpoint_mode_name(info.color_endpoint_modes[p]) << "\n";
     }
-    std::cout << std::endl;
+    std::cout << "\n";
     
     std::cout << "Color endpoints:" << std::endl;
     for (int p = 0; p < info.partition_count; ++p)
@@ -2462,41 +2556,45 @@ void print_astc_block_info(const astcenc_block_info& info)
             for (int c = 0; c < 4; ++c)
             {
                 if (c > 0) std::cout << ", ";
-                std::cout << std::fixed << std::setprecision(3) << info.color_endpoints[p][e][c];
+                std::cout << std::fixed << std::setprecision(2) << info.color_endpoints[p][e][c];
             }
             std::cout << std::endl;
         }
     }
-    
-    std::cout << "Weight values (plane 1): ";
-    int weights_to_show = std::min((int)info.texel_count, 10);
-    for (int i = 0; i < weights_to_show; ++i)
+
+    std::cout << "\n";
+
+    // Print weights in block layout (normalized 0.0-1.0)
+    std::cout << "Weight values (plane 1, normalized 0.0-1.0):" << std::endl;
+    std::cout << std::fixed << std::setprecision(2) << std::left;
+    for (int y = 0; y < info.block_y; ++y)
     {
-        if (i > 0) std::cout << ", ";
-        std::cout << std::fixed << std::setprecision(3) << info.weight_values_plane1[i];
-    }
-    if (info.texel_count > weights_to_show)
-    {
-        std::cout << " ... (total " << info.texel_count << " weights)";
-    }
-    std::cout << std::endl;
-    
-    if (info.is_dual_plane_block)
-    {
-        std::cout << "Weight values (plane 2): ";
-        for (int i = 0; i < weights_to_show; ++i)
+        std::cout << "  ";
+        for (int x = 0; x < info.block_x; ++x)
         {
-            if (i > 0) std::cout << ", ";
-            std::cout << std::fixed << std::setprecision(3) << info.weight_values_plane2[i];
-        }
-        if (info.texel_count > weights_to_show)
-        {
-            std::cout << " ... (total " << info.texel_count << " weights)";
+            int idx = y * info.block_x + x;
+            std::cout << std::setw(4) << info.weight_values_plane1[idx] / 4.0f << " ";
         }
         std::cout << std::endl;
     }
-    
-    std::cout << "=== End Block Information ===" << std::endl;
+
+    if (info.is_dual_plane_block)
+    {
+        std::cout << "\nWeight values (plane 2, normalized 0.0-1.0):" << std::endl;
+        std::cout << std::fixed << std::setprecision(2) << std::left;
+        for (int y = 0; y < info.block_y; ++y)
+        {
+            std::cout << "  ";
+            for (int x = 0; x < info.block_x; ++x)
+            {
+                int idx = y * info.block_x + x;
+                std::cout << std::setw(4) << info.weight_values_plane2[idx] / 4.0f << " ";
+            }
+            std::cout << std::endl;
+        }
+    }
+
+    std::cout << "\n";
 }
 
 // Convenience function to read block info with automatic block size detection

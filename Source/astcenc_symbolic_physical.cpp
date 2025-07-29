@@ -152,16 +152,15 @@ void symbolic_to_physical(
 
 	const auto& bm = bsd.get_block_mode(scb.block_mode);
 	const auto& di = bsd.get_decimation_info(bm.decimation_mode);
-	int weight_count = di.weight_count;
-	quant_method weight_quant_method = bm.get_weight_quant_mode();
+
+	const int is_dual_plane = bm.is_dual_plane;
+    const int weight_count = di.weight_count;
+	const int real_weight_count = is_dual_plane ? 2 * weight_count : weight_count;
+
+    quant_method weight_quant_method = bm.get_weight_quant_mode();
 	float weight_quant_levels = static_cast<float>(get_quant_level(weight_quant_method));
-	int is_dual_plane = bm.is_dual_plane;
 
 	const auto& qat = quant_and_xfer_tables[weight_quant_method];
-
-	int real_weight_count = is_dual_plane ? 2 * weight_count : weight_count;
-
-	int bits_for_weights = get_ise_sequence_bitcount(real_weight_count, weight_quant_method);
 
 	uint8_t weights[64];
 	if (is_dual_plane)
@@ -200,6 +199,7 @@ void symbolic_to_physical(
 	write_bits(scb.block_mode, 11, 0, pcb);
 	write_bits(partition_count - 1, 2, 11, pcb);
 
+	const int bits_for_weights = get_ise_sequence_bitcount(real_weight_count, weight_quant_method);
 	int below_weights_pos = 128 - bits_for_weights;
 
 	// Encode partition index and color endpoint types for blocks with 2+ partitions
